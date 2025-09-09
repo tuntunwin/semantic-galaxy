@@ -397,8 +397,16 @@ const Scene: FC<SceneProps> = ({
 };
 
 export default function App() {
-  const { instance, loadModel, isLoading, isReady, progress, status, error } =
-    useModel();
+  const {
+    device,
+    loadModel,
+    isLoading,
+    isReady,
+    progress,
+    status,
+    error,
+    embed,
+  } = useModel();
 
   const [textInput, setTextInput] = useState<string>("");
   const [galaxyPoints, setGalaxyPoints] = useState<GalaxyPoint[]>([]);
@@ -415,7 +423,7 @@ export default function App() {
 
   const setDefaultSentences = () => {
     let sentences = DEFAULT_SENTENCES;
-    if (instance?.device == "wasm") {
+    if (device === "wasm") {
       // Use fewer examples for demonstration purposes (it's slower)
       sentences = sentences.filter((_, i) => i % 2 === 0);
     }
@@ -424,10 +432,10 @@ export default function App() {
 
   useEffect(() => {
     setDefaultSentences();
-  }, [instance]);
+  }, [device]);
 
   const handleGenerateGalaxy = async () => {
-    if (!instance || !textInput.trim()) {
+    if (!isReady || !textInput.trim()) {
       alert("Model not ready or no text provided.");
       return;
     }
@@ -449,7 +457,7 @@ export default function App() {
       return;
     }
 
-    const batch_size = instance.device === "webgpu" ? 8 : 1;
+    const batch_size = device === "webgpu" ? 4 : 1;
     try {
       const embeddings: number[][] = [];
       const start = performance.now();
@@ -458,13 +466,12 @@ export default function App() {
         const batch = sentences.slice(i, i + batch_size);
         const progress = ((i + batch.length) / sentences.length) * 100;
 
-        const inputs = instance.tokenizer(batch, {
+        const batchEmbeddings = await embed(batch, {
           padding: true,
           truncation: true,
           max_length: 256,
         });
-        const { sentence_embedding } = await instance.model(inputs);
-        embeddings.push(...sentence_embedding.tolist());
+        embeddings.push(...batchEmbeddings);
         setGenerationStatus(`Embedding... (${progress.toFixed(0)}%)`);
       }
       const end = performance.now();
@@ -523,7 +530,7 @@ export default function App() {
       const queryToRun = pendingQuery.current;
       pendingQuery.current = null;
 
-      if (!queryToRun.trim() || !instance || galaxyPoints.length === 0) {
+      if (!queryToRun.trim() || !isReady || galaxyPoints.length === 0) {
         setSearchResults([]);
         lastQueryEmbedding.current = null;
         isSearching.current = false;
@@ -532,13 +539,11 @@ export default function App() {
       }
 
       try {
-        const inputs = instance.tokenizer(queryToRun, {
+        const [queryEmbedding] = await embed([queryToRun], {
           padding: true,
           truncation: true,
           max_length: 256,
         });
-        const { sentence_embedding } = await instance.model(inputs);
-        const queryEmbedding: number[] = sentence_embedding.tolist()[0];
         lastQueryEmbedding.current = queryEmbedding;
         const results: SearchResult[] = galaxyPoints
           .map((point) => ({
@@ -558,7 +563,7 @@ export default function App() {
     };
 
     processQueue();
-  }, [searchQuery, galaxyPoints, instance]);
+  }, [searchQuery, galaxyPoints, isReady, embed]);
 
   const handlePointFocus = (point: GalaxyPoint | SearchResult) => {
     let similarity = (point as SearchResult).similarity;
@@ -675,7 +680,7 @@ export default function App() {
               />
               <button
                 onClick={handleGenerateGalaxy}
-                disabled={isGenerating || !instance}
+                disabled={isGenerating || !isReady}
                 className="mt-4 w-full bg-blue-600 hover:bg-blue-500 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-bold py-2.5 px-4 rounded-lg transition-colors"
               >
                 {isGenerating ? generationStatus : "Generate Galaxy"}
