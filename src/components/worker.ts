@@ -4,11 +4,92 @@ import {
   type PreTrainedModel,
   type PreTrainedTokenizer,
 } from "@huggingface/transformers";
+import { UMAP } from "umap-js";
 
 const MODEL_ID = "onnx-community/embeddinggemma-300m-ONNX";
 let model: PreTrainedModel | null = null;
 let tokenizer: PreTrainedTokenizer | null = null;
 let device: "webgpu" | "wasm" | null = null;
+
+// Distance functions for UMAP
+const euclidean = (a: number[], b: number[]): number => {
+  let sum = 0;
+  for (let i = 0; i < a.length; i++) {
+    const diff = a[i] - b[i];
+    sum += diff * diff;
+  }
+  return Math.sqrt(sum);
+};
+
+const cosine = (a: number[], b: number[]): number => {
+  let dotProduct = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dotProduct += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  const similarity = dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+  return 1 - similarity; // Convert to distance
+};
+
+// K-means clustering implementation
+function kmeans(data: number[][], k: number, maxIterations: number = 100): number[] {
+  const n = data.length;
+  if (n === 0 || k <= 0) return [];
+  
+  // Initialize centroids randomly from data points
+  const centroidIndices = new Set<number>();
+  while (centroidIndices.size < Math.min(k, n)) {
+    centroidIndices.add(Math.floor(Math.random() * n));
+  }
+  let centroids = Array.from(centroidIndices).map(i => [...data[i]]);
+  
+  let assignments = new Array(n).fill(0);
+  
+  for (let iter = 0; iter < maxIterations; iter++) {
+    // Assign points to nearest centroid
+    const newAssignments = data.map(point => {
+      let minDist = Infinity;
+      let nearest = 0;
+      for (let c = 0; c < centroids.length; c++) {
+        const dist = euclidean(point, centroids[c]);
+        if (dist < minDist) {
+          minDist = dist;
+          nearest = c;
+        }
+      }
+      return nearest;
+    });
+    
+    // Check for convergence
+    const changed = newAssignments.some((a, i) => a !== assignments[i]);
+    assignments = newAssignments;
+    
+    if (!changed) break;
+    
+    // Update centroids
+    const sums: number[][] = Array(centroids.length).fill(null).map(() => 
+      new Array(data[0].length).fill(0)
+    );
+    const counts = new Array(centroids.length).fill(0);
+    
+    for (let i = 0; i < n; i++) {
+      const cluster = assignments[i];
+      counts[cluster]++;
+      for (let d = 0; d < data[i].length; d++) {
+        sums[cluster][d] += data[i][d];
+      }
+    }
+    
+    centroids = sums.map((sum, c) => 
+      counts[c] > 0 ? sum.map(v => v / counts[c]) : centroids[c]
+    );
+  }
+  
+  return assignments;
+}
 
 self.onmessage = async (event) => {
   const { type, payload } = event.data;
@@ -59,6 +140,41 @@ self.onmessage = async (event) => {
       const { sentence_embedding } = await model(inputs);
       const embeddings = sentence_embedding.tolist();
       self.postMessage({ type: "embeddings", payload: { embeddings } });
+    } catch (error) {
+      self.postMessage({
+        type: "error",
+        payload: error instanceof Error ? error.message : String(error),
+      });
+    }
+  } else if (type === "run-umap") {
+    try {
+      const { embeddings, sentences, umapConfig, clusteringConfig } = payload;
+      const { nNeighbors, minDist, spread, distanceMetric } = umapConfig;
+      const { coloringMode, kmeansK } = clusteringConfig;
+      
+      const distanceFn = distanceMetric === "cosine" ? cosine : euclidean;
+      const effectiveNNeighbors = Math.max(2, Math.min(sentences.length - 1, nNeighbors));
+      
+      const umap = new UMAP({
+        nComponents: 3,
+        nNeighbors: effectiveNNeighbors,
+        minDist,
+        spread,
+        distanceFn,
+      });
+      
+      const coords3D: number[][] = umap.fit(embeddings);
+      
+      // Run k-means clustering if requested
+      let clusterAssignments: number[] | null = null;
+      if (coloringMode === "kmeans") {
+        clusterAssignments = kmeans(embeddings, kmeansK);
+      }
+      
+      self.postMessage({
+        type: "umap-result",
+        payload: { coords3D, clusterAssignments },
+      });
     } catch (error) {
       self.postMessage({
         type: "error",

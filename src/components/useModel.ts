@@ -9,9 +9,37 @@ interface ModelLoaderState {
   device: "webgpu" | "wasm" | null;
 }
 
+export type DistanceMetric = "euclidean" | "cosine";
+export type ColoringMode = "similarity" | "kmeans";
+
+export interface UMAPConfig {
+  nNeighbors: number;
+  minDist: number;
+  spread: number;
+  distanceMetric: DistanceMetric;
+}
+
+export interface ClusteringConfig {
+  coloringMode: ColoringMode;
+  kmeansK: number;
+}
+
+export const DEFAULT_UMAP_CONFIG: UMAPConfig = {
+  nNeighbors: 15,
+  minDist: 0.1,
+  spread: 1.0,
+  distanceMetric: "euclidean",
+};
+
+export const DEFAULT_CLUSTERING_CONFIG: ClusteringConfig = {
+  coloringMode: "similarity",
+  kmeansK: 5,
+};
+
 let worker: Worker | null = null;
 let workerReady = false;
 let pendingEmbeddings: ((embeddings: number[][]) => void)[] = [];
+let pendingUMAP: ((result: { coords3D: number[][]; clusterAssignments: number[] | null }) => void)[] = [];
 
 export const useModel = () => {
   const [state, setState] = useState<ModelLoaderState>({
@@ -57,6 +85,10 @@ export const useModel = () => {
           if (pendingEmbeddings.length > 0) {
             pendingEmbeddings.shift()?.(payload.embeddings);
           }
+        } else if (type === "umap-result") {
+          if (pendingUMAP.length > 0) {
+            pendingUMAP.shift()?.(payload);
+          }
         }
       };
     }
@@ -95,9 +127,30 @@ export const useModel = () => {
     });
   }, []);
 
+  const runUMAP = useCallback(
+    async (
+      embeddings: number[][],
+      sentences: string[],
+      umapConfig: UMAPConfig,
+      clusteringConfig: ClusteringConfig
+    ) => {
+      return new Promise<{ coords3D: number[][]; clusterAssignments: number[] | null }>(
+        (resolve, _reject) => {
+          pendingUMAP.push(resolve);
+          worker?.postMessage({
+            type: "run-umap",
+            payload: { embeddings, sentences, umapConfig, clusteringConfig },
+          });
+        }
+      );
+    },
+    []
+  );
+
   return {
     ...state,
     loadModel,
     embed,
+    runUMAP,
   };
 };

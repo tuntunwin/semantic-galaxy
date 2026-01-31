@@ -2,7 +2,6 @@ import { useState, useEffect, useRef, useMemo, Suspense, type FC } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls, Html, Stars } from "@react-three/drei";
 import { EffectComposer, Bloom } from "@react-three/postprocessing";
-import { UMAP } from "umap-js";
 import * as THREE from "three";
 import { cos_sim } from "@huggingface/transformers";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
@@ -10,7 +9,26 @@ import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { DEFAULT_SENTENCES, GALAXY_RADIUS } from "./constants";
 import Logo from "./components/Logo";
 import BackgroundMusic from "./components/BackgroundMusic";
-import { useModel } from "./components/useModel";
+import HelpModal from "./components/HelpModal";
+import Tooltip from "./components/Tooltip";
+import {
+  useModel,
+  DEFAULT_UMAP_CONFIG,
+  DEFAULT_CLUSTERING_CONFIG,
+  type UMAPConfig,
+  type ClusteringConfig,
+  type ColoringMode,
+} from "./components/useModel";
+
+// Tooltip descriptions for UMAP settings
+const TOOLTIPS = {
+  neighbors: "Controls how many nearby points to consider. Lower values preserve local structure, higher values show global patterns.",
+  minDist: "Controls how tightly points cluster together. Lower values create denser clusters, higher values spread points out.",
+  spread: "Controls the overall scale of the visualization. Higher values expand the galaxy, lower values compress it.",
+  distanceMetric: "How similarity is measured. Cosine focuses on meaning direction, Euclidean on absolute distance.",
+  coloringMode: "How points are colored. Similarity colors by search relevance, K-Means by automatic cluster grouping.",
+  kmeansK: "Number of clusters to find. More clusters reveal finer distinctions, fewer show broader categories.",
+};
 
 const MainMenuGalaxy: FC = () => {
   const groupRef = useRef<THREE.Group>(null!);
@@ -176,6 +194,7 @@ interface InteractiveSphereProps {
   color: string;
   similarity: number | null;
   onClick: (point: GalaxyPoint) => void;
+  onCtrlClick: (point: GalaxyPoint) => void;
 }
 
 const InteractiveSphere: FC<InteractiveSphereProps> = ({
@@ -183,6 +202,7 @@ const InteractiveSphere: FC<InteractiveSphereProps> = ({
   color,
   similarity,
   onClick,
+  onCtrlClick,
 }) => {
   const [isHovered, setIsHovered] = useState(false);
   const meshRef = useRef<THREE.Mesh>(null!);
@@ -228,7 +248,16 @@ const InteractiveSphere: FC<InteractiveSphereProps> = ({
     <group position={point.position}>
       <mesh
         ref={meshRef}
-        onClick={() => onClick(point)}
+        onClick={(e) => {
+          e.stopPropagation();
+          // Access modifier keys from the native DOM MouseEvent
+          const { ctrlKey, metaKey } = e.nativeEvent;
+          if (ctrlKey || metaKey) {
+            onCtrlClick(point);
+          } else {
+            onClick(point);
+          }
+        }}
         onPointerOver={(e) => {
           e.stopPropagation();
           setIsHovered(true);
@@ -265,16 +294,38 @@ const InteractiveSphere: FC<InteractiveSphereProps> = ({
   );
 };
 
+// Cluster colors for k-means visualization
+const CLUSTER_COLORS = [
+  "#FF6B6B", // Red
+  "#4ECDC4", // Teal
+  "#45B7D1", // Sky Blue
+  "#96CEB4", // Sage Green
+  "#FFEAA7", // Yellow
+  "#DDA0DD", // Plum
+  "#98D8C8", // Mint
+  "#F7DC6F", // Gold
+  "#BB8FCE", // Lavender
+  "#85C1E9", // Light Blue
+  "#F8B500", // Amber
+  "#00CED1", // Dark Cyan
+];
+
 interface SceneProps {
   galaxyPoints: GalaxyPoint[];
   searchResults: SearchResult[];
   onSphereClick: (point: GalaxyPoint) => void;
+  onSphereCtrlClick: (point: GalaxyPoint) => void;
+  clusterAssignments: number[] | null;
+  coloringMode: ColoringMode;
 }
 
 const Scene: FC<SceneProps> = ({
   galaxyPoints,
   searchResults,
   onSphereClick,
+  onSphereCtrlClick,
+  clusterAssignments,
+  coloringMode,
 }) => {
   const controlsRef = useRef<OrbitControlsImpl>(null);
   const cameraTargetPos = useRef(new THREE.Vector3());
@@ -345,6 +396,17 @@ const Scene: FC<SceneProps> = ({
     const red = new THREE.Color(0xff4d4d);
     const white = new THREE.Color(0xffffff);
     const green = new THREE.Color(0x4dff4d);
+    
+    // Use cluster colors if k-means mode is active and clusters are available
+    if (coloringMode === "kmeans" && clusterAssignments && clusterAssignments.length === galaxyPoints.length) {
+      const colors = galaxyPoints.map((_, i) => {
+        const cluster = clusterAssignments[i];
+        return CLUSTER_COLORS[cluster % CLUSTER_COLORS.length];
+      });
+      return { pointColors: colors, similarityMap: new Map<string, number>() };
+    }
+    
+    // Similarity-based coloring
     if (searchResults.length === 0) {
       return {
         pointColors: galaxyPoints.map(() => "#FFFFFF"),
@@ -366,7 +428,7 @@ const Scene: FC<SceneProps> = ({
       return `#${color.getHexString()}`;
     });
     return { pointColors: colors, similarityMap: simMap };
-  }, [galaxyPoints, searchResults]);
+  }, [galaxyPoints, searchResults, clusterAssignments, coloringMode]);
 
   return (
     <>
@@ -390,6 +452,7 @@ const Scene: FC<SceneProps> = ({
           color={pointColors[i]}
           similarity={similarityMap.get(point.text) ?? null}
           onClick={onSphereClick}
+          onCtrlClick={onSphereCtrlClick}
         />
       ))}
     </>
@@ -406,6 +469,7 @@ export default function App() {
     status,
     error,
     embed,
+    runUMAP,
   } = useModel();
 
   const [textInput, setTextInput] = useState<string>("");
@@ -417,6 +481,27 @@ export default function App() {
   const [isTextareaExpanded, setIsTextareaExpanded] = useState<boolean>(false);
   const lastQueryEmbedding = useRef<number[] | null>(null);
   const [generationStatus, setGenerationStatus] = useState("");
+  
+  // UMAP configuration state
+  const [umapConfig, setUmapConfig] = useState<UMAPConfig>(DEFAULT_UMAP_CONFIG);
+  const [clusteringConfig, setClusteringConfig] = useState<ClusteringConfig>(DEFAULT_CLUSTERING_CONFIG);
+  const [clusterAssignments, setClusterAssignments] = useState<number[] | null>(null);
+  const [showSettings, setShowSettings] = useState<boolean>(false);
+  
+  // Help modal state
+  const [isHelpOpen, setIsHelpOpen] = useState<boolean>(false);
+  const [helpScrollSection, setHelpScrollSection] = useState<string | undefined>(undefined);
+  
+  const openHelpSection = (section: string) => {
+    setHelpScrollSection(section);
+    setIsHelpOpen(true);
+  };
+  
+  // Music state (default disabled)
+  const [musicEnabled, setMusicEnabled] = useState<boolean>(false);
+  
+  // Detail pane state for Ctrl+Click
+  const [detailPoint, setDetailPoint] = useState<GalaxyPoint | null>(null);
 
   const isSearching = useRef(false);
   const pendingQuery = useRef<string | null>(null);
@@ -443,6 +528,7 @@ export default function App() {
     setSearchResults([]);
     setSearchQuery("");
     lastQueryEmbedding.current = null;
+    setClusterAssignments(null);
     setGenerationStatus("Generating galaxy...");
     const sentences = textInput
       .split("\n")
@@ -479,9 +565,14 @@ export default function App() {
       console.log(`Embedding time: ${embeddingTime}ms`);
 
       setGenerationStatus("Running UMAP to create 3D projection...");
-      const nNeighbors = Math.max(2, Math.min(sentences.length - 1, 15));
-      const umap = new UMAP({ nComponents: 3, nNeighbors, minDist: 0.1 });
-      const coords3D: number[][] = umap.fit(embeddings);
+      const { coords3D, clusterAssignments: clusters } = await runUMAP(
+        embeddings,
+        sentences,
+        umapConfig,
+        clusteringConfig
+      );
+      setClusterAssignments(clusters);
+      
       const rawPoints = coords3D.map((p) => new THREE.Vector3(...p));
       const box = new THREE.Box3().setFromPoints(rawPoints);
       const center = box.getCenter(new THREE.Vector3());
@@ -586,7 +677,7 @@ export default function App() {
   if (!isReady) {
     return (
       <div className="h-screen w-screen bg-[#08080b] text-white relative">
-        {/* <BackgroundMusic /> */}
+        <BackgroundMusic enabled={musicEnabled} />
         <MenuScene />
         {!isLoading && <MainMenuUI onLoadModel={loadModel} />}
         {isLoading && <LoadingUI status={status} progress={progress} />}
@@ -595,13 +686,30 @@ export default function App() {
             <p>Error: {error}</p>
           </div>
         )}
+        {/* Music toggle in menu */}
+        <button
+          onClick={() => setMusicEnabled(!musicEnabled)}
+          className="absolute bottom-4 right-4 bg-black/30 backdrop-blur-lg p-3 rounded-full pointer-events-auto hover:bg-black/50 transition-colors z-20"
+          title={musicEnabled ? "Disable music" : "Enable music"}
+        >
+          {musicEnabled ? (
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M9 12a3 3 0 11-6 0 3 3 0 016 0z" />
+            </svg>
+          ) : (
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />
+            </svg>
+          )}
+        </button>
       </div>
     );
   }
 
   return (
     <div className="h-screen w-screen bg-[#08080b] text-white relative">
-      {/* <BackgroundMusic /> */}
+      <BackgroundMusic enabled={musicEnabled} />
       <div className="absolute top-0 left-0 w-full h-full z-0">
         {galaxyPoints.length > 0 ? (
           <Canvas frameloop="demand" camera={{ position: [0, 0, 25], fov: 45 }}>
@@ -617,6 +725,9 @@ export default function App() {
                 galaxyPoints={galaxyPoints}
                 searchResults={searchResults}
                 onSphereClick={handlePointFocus}
+                onSphereCtrlClick={(point) => setDetailPoint(point)}
+                clusterAssignments={clusterAssignments}
+                coloringMode={clusteringConfig.coloringMode}
               />
               <EffectComposer enableNormalPass={false}>
                 <Bloom
@@ -689,6 +800,226 @@ export default function App() {
               <p className="text-center text-sm mt-2 text-gray-400 h-5">
                 {!isGenerating ? generationStatus : ""}
               </p>
+              
+              {/* Settings Toggle */}
+              <button
+                onClick={() => setShowSettings(!showSettings)}
+                className="mt-2 w-full text-sm text-gray-400 hover:text-white transition-colors flex items-center justify-center gap-1"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  className={`h-4 w-4 transition-transform ${showSettings ? "rotate-180" : ""}`}
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+                {showSettings ? "Hide Settings" : "Show Settings"}
+              </button>
+              
+              {/* Settings Panel */}
+              {showSettings && (
+                <div className="mt-3 p-3 bg-white/5 rounded-lg border border-white/10 space-y-3 text-sm">
+                  <div className="flex justify-between items-center mb-2">
+                    <h3 className="font-semibold text-gray-300">UMAP Settings</h3>
+                    <button
+                      onClick={() => setIsHelpOpen(true)}
+                      className="text-blue-400 hover:text-blue-300 text-xs flex items-center gap-1"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                      Help
+                    </button>
+                  </div>
+                  
+                  {/* nNeighbors slider */}
+                  <div>
+                    <div className="flex justify-between text-gray-400 mb-1">
+                      <Tooltip content={TOOLTIPS.neighbors} onLearnMore={() => openHelpSection("neighbors-nneighbors")}>
+                        <span className="flex items-center gap-1 cursor-help">
+                          Neighbors
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                          </svg>
+                        </span>
+                      </Tooltip>
+                      <span>{umapConfig.nNeighbors}</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="2"
+                      max="50"
+                      value={umapConfig.nNeighbors}
+                      onChange={(e) => setUmapConfig({ ...umapConfig, nNeighbors: parseInt(e.target.value) })}
+                      className="w-full accent-blue-500"
+                    />
+                  </div>
+                  
+                  {/* minDist slider */}
+                  <div>
+                    <div className="flex justify-between text-gray-400 mb-1">
+                      <Tooltip content={TOOLTIPS.minDist} onLearnMore={() => openHelpSection("min-distance-mindist")}>
+                        <span className="flex items-center gap-1 cursor-help">
+                          Min Distance
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                          </svg>
+                        </span>
+                      </Tooltip>
+                      <span>{umapConfig.minDist.toFixed(2)}</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.01"
+                      value={umapConfig.minDist}
+                      onChange={(e) => setUmapConfig({ ...umapConfig, minDist: parseFloat(e.target.value) })}
+                      className="w-full accent-blue-500"
+                    />
+                  </div>
+                  
+                  {/* spread slider */}
+                  <div>
+                    <div className="flex justify-between text-gray-400 mb-1">
+                      <Tooltip content={TOOLTIPS.spread} onLearnMore={() => openHelpSection("spread")}>
+                        <span className="flex items-center gap-1 cursor-help">
+                          Spread
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                          </svg>
+                        </span>
+                      </Tooltip>
+                      <span>{umapConfig.spread.toFixed(2)}</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0.5"
+                      max="3"
+                      step="0.1"
+                      value={umapConfig.spread}
+                      onChange={(e) => setUmapConfig({ ...umapConfig, spread: parseFloat(e.target.value) })}
+                      className="w-full accent-blue-500"
+                    />
+                  </div>
+                  
+                  {/* Distance metric toggle */}
+                  <div>
+                    <Tooltip content={TOOLTIPS.distanceMetric} onLearnMore={() => openHelpSection("distance-metric")}>
+                      <span className="text-gray-400 mb-1 flex items-center gap-1 cursor-help">
+                        Distance Metric
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                      </span>
+                    </Tooltip>
+                    <div className="flex gap-2 mt-1">
+                      <button
+                        onClick={() => setUmapConfig({ ...umapConfig, distanceMetric: "euclidean" })}
+                        className={`flex-1 py-1.5 px-3 rounded text-xs font-medium transition-colors ${
+                          umapConfig.distanceMetric === "euclidean"
+                            ? "bg-blue-600 text-white"
+                            : "bg-white/10 text-gray-400 hover:bg-white/20"
+                        }`}
+                      >
+                        Euclidean
+                      </button>
+                      <button
+                        onClick={() => setUmapConfig({ ...umapConfig, distanceMetric: "cosine" })}
+                        className={`flex-1 py-1.5 px-3 rounded text-xs font-medium transition-colors ${
+                          umapConfig.distanceMetric === "cosine"
+                            ? "bg-blue-600 text-white"
+                            : "bg-white/10 text-gray-400 hover:bg-white/20"
+                        }`}
+                      >
+                        Cosine
+                      </button>
+                    </div>
+                  </div>
+                  
+                  <h3 className="font-semibold text-gray-300 mb-2 pt-2 border-t border-white/10">Coloring</h3>
+                  
+                  {/* Coloring mode toggle */}
+                  <div>
+                    <Tooltip content={TOOLTIPS.coloringMode} onLearnMore={() => openHelpSection("coloring-mode")}>
+                      <span className="text-gray-400 mb-1 flex items-center gap-1 cursor-help">
+                        Color Mode
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                      </span>
+                    </Tooltip>
+                    <div className="flex gap-2 mt-1">
+                      <button
+                        onClick={() => setClusteringConfig({ ...clusteringConfig, coloringMode: "similarity" })}
+                        className={`flex-1 py-1.5 px-3 rounded text-xs font-medium transition-colors ${
+                          clusteringConfig.coloringMode === "similarity"
+                            ? "bg-blue-600 text-white"
+                            : "bg-white/10 text-gray-400 hover:bg-white/20"
+                        }`}
+                      >
+                        Similarity
+                      </button>
+                      <button
+                        onClick={() => setClusteringConfig({ ...clusteringConfig, coloringMode: "kmeans" })}
+                        className={`flex-1 py-1.5 px-3 rounded text-xs font-medium transition-colors ${
+                          clusteringConfig.coloringMode === "kmeans"
+                            ? "bg-blue-600 text-white"
+                            : "bg-white/10 text-gray-400 hover:bg-white/20"
+                        }`}
+                      >
+                        K-Means
+                      </button>
+                    </div>
+                  </div>
+                  
+                  {/* K value slider (only show when k-means is selected) */}
+                  {clusteringConfig.coloringMode === "kmeans" && (
+                    <div>
+                      <div className="flex justify-between text-gray-400 mb-1">
+                        <Tooltip content={TOOLTIPS.kmeansK} onLearnMore={() => openHelpSection("clusters-k---k-means-parameter")}>
+                          <span className="flex items-center gap-1 cursor-help">
+                            Clusters (K)
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            </svg>
+                          </span>
+                        </Tooltip>
+                        <span>{clusteringConfig.kmeansK}</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="2"
+                        max="12"
+                        value={clusteringConfig.kmeansK}
+                        onChange={(e) => setClusteringConfig({ ...clusteringConfig, kmeansK: parseInt(e.target.value) })}
+                        className="w-full accent-blue-500"
+                      />
+                    </div>
+                  )}
+                  
+                  <h3 className="font-semibold text-gray-300 mb-2 pt-2 border-t border-white/10">Audio</h3>
+                  
+                  {/* Music toggle */}
+                  <div className="flex items-center justify-between">
+                    <span className="text-gray-400">Background Music</span>
+                    <button
+                      onClick={() => setMusicEnabled(!musicEnabled)}
+                      className={`w-12 h-6 rounded-full transition-colors relative ${
+                        musicEnabled ? "bg-blue-600" : "bg-white/20"
+                      }`}
+                    >
+                      <div
+                        className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-transform ${
+                          musicEnabled ? "translate-x-7" : "translate-x-1"
+                        }`}
+                      />
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
             {galaxyPoints.length > 0 && (
               <div
@@ -766,7 +1097,124 @@ export default function App() {
             </div>
           </div>
         )}
+        
+        {/* Detail Pane - shows on Ctrl+Click */}
+        {detailPoint && (
+          <div className="absolute top-4 right-4 w-96 max-h-[80vh] bg-black/80 backdrop-blur-lg border border-white/10 rounded-xl shadow-2xl pointer-events-auto overflow-hidden flex flex-col">
+            {/* Header */}
+            <div className="flex items-center justify-between p-4 border-b border-white/10">
+              <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                Point Details
+              </h3>
+              <button
+                onClick={() => setDetailPoint(null)}
+                className="p-1 rounded-lg hover:bg-white/10 transition-colors"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-gray-400 hover:text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            
+            {/* Content */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+              {/* Text */}
+              <div>
+                <label className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Text</label>
+                <p className="mt-1 text-white bg-white/5 p-3 rounded-lg border border-white/10">{detailPoint.text}</p>
+              </div>
+              
+              {/* Position */}
+              <div>
+                <label className="text-xs font-semibold text-gray-400 uppercase tracking-wide">3D Position</label>
+                <div className="mt-1 grid grid-cols-3 gap-2 text-sm">
+                  <div className="bg-white/5 p-2 rounded-lg border border-white/10 text-center">
+                    <span className="text-gray-400">X</span>
+                    <p className="text-white font-mono">{detailPoint.position[0].toFixed(3)}</p>
+                  </div>
+                  <div className="bg-white/5 p-2 rounded-lg border border-white/10 text-center">
+                    <span className="text-gray-400">Y</span>
+                    <p className="text-white font-mono">{detailPoint.position[1].toFixed(3)}</p>
+                  </div>
+                  <div className="bg-white/5 p-2 rounded-lg border border-white/10 text-center">
+                    <span className="text-gray-400">Z</span>
+                    <p className="text-white font-mono">{detailPoint.position[2].toFixed(3)}</p>
+                  </div>
+                </div>
+              </div>
+              
+              {/* Embedding Vector */}
+              <div>
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-semibold text-gray-400 uppercase tracking-wide">
+                    Embedding Vector ({detailPoint.embedding.length} dimensions)
+                  </label>
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(JSON.stringify(detailPoint.embedding));
+                    }}
+                    className="text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                    </svg>
+                    Copy
+                  </button>
+                </div>
+                <div className="mt-1 bg-white/5 p-3 rounded-lg border border-white/10 max-h-48 overflow-y-auto">
+                  <div className="font-mono text-xs text-gray-300 break-all">
+                    [{detailPoint.embedding.slice(0, 20).map(v => v.toFixed(6)).join(", ")}
+                    {detailPoint.embedding.length > 20 && (
+                      <span className="text-gray-500">, ... ({detailPoint.embedding.length - 20} more)</span>
+                    )}]
+                  </div>
+                </div>
+              </div>
+              
+              {/* Stats */}
+              <div>
+                <label className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Vector Statistics</label>
+                <div className="mt-1 grid grid-cols-2 gap-2 text-sm">
+                  <div className="bg-white/5 p-2 rounded-lg border border-white/10">
+                    <span className="text-gray-400 text-xs">Min</span>
+                    <p className="text-white font-mono">{Math.min(...detailPoint.embedding).toFixed(6)}</p>
+                  </div>
+                  <div className="bg-white/5 p-2 rounded-lg border border-white/10">
+                    <span className="text-gray-400 text-xs">Max</span>
+                    <p className="text-white font-mono">{Math.max(...detailPoint.embedding).toFixed(6)}</p>
+                  </div>
+                  <div className="bg-white/5 p-2 rounded-lg border border-white/10">
+                    <span className="text-gray-400 text-xs">Mean</span>
+                    <p className="text-white font-mono">{(detailPoint.embedding.reduce((a, b) => a + b, 0) / detailPoint.embedding.length).toFixed(6)}</p>
+                  </div>
+                  <div className="bg-white/5 p-2 rounded-lg border border-white/10">
+                    <span className="text-gray-400 text-xs">L2 Norm</span>
+                    <p className="text-white font-mono">{Math.sqrt(detailPoint.embedding.reduce((a, b) => a + b * b, 0)).toFixed(6)}</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+            
+            {/* Footer */}
+            <div className="p-3 border-t border-white/10 text-center text-xs text-gray-500">
+              <kbd className="bg-white/10 px-1.5 py-0.5 rounded">Ctrl</kbd> + Click on any point to view details
+            </div>
+          </div>
+        )}
       </div>
+      
+      {/* Help Modal */}
+      <HelpModal
+        isOpen={isHelpOpen}
+        onClose={() => {
+          setIsHelpOpen(false);
+          setHelpScrollSection(undefined);
+        }}
+        scrollToSection={helpScrollSection}
+      />
     </div>
   );
 }
