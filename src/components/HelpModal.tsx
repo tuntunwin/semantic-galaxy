@@ -16,14 +16,23 @@ const HelpModal: FC<HelpModalProps> = ({ isOpen, onClose, scrollToSection }) => 
     if (isOpen) {
       setIsLoading(true);
       fetch(`${import.meta.env.BASE_URL}help/umap-settings.md`)
-        .then((res) => res.text())
+        .then((res) => {
+          if (!res.ok) {
+            throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+          }
+          return res.text();
+        })
         .then((text) => {
+          // Check if we got HTML instead of markdown (404 page)
+          if (text.trim().startsWith('<!DOCTYPE') || text.trim().startsWith('<html')) {
+            throw new Error('Received HTML instead of markdown - file not found');
+          }
           setContent(text);
           setIsLoading(false);
         })
         .catch((err) => {
           console.error("Failed to load help content:", err);
-          setContent("# Error\n\nFailed to load help content.");
+          setContent("# Error\n\nFailed to load help content. Please try again later.");
           setIsLoading(false);
         });
     }
