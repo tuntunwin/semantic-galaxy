@@ -6,10 +6,15 @@ import {
 } from "@huggingface/transformers";
 import { UMAP } from "umap-js";
 
-const MODEL_ID = "onnx-community/embeddinggemma-300m-ONNX";
+let currentModelId: string | null = null;
 let model: PreTrainedModel | null = null;
 let tokenizer: PreTrainedTokenizer | null = null;
 let device: "webgpu" | "wasm" | null = null;
+
+// Check if model requires special handling (like embeddinggemma)
+const isEmbeddingGemma = (modelId: string): boolean => {
+  return modelId.toLowerCase().includes("embeddinggemma");
+};
 
 // Distance functions for UMAP
 const euclidean = (a: number[], b: number[]): number => {
@@ -95,6 +100,18 @@ self.onmessage = async (event) => {
   const { type, payload } = event.data;
   if (type === "load-model") {
     try {
+      const modelId = payload?.modelId || "onnx-community/embeddinggemma-300m-ONNX";
+      
+      // Check if we need to reload the model
+      if (model && tokenizer && currentModelId === modelId) {
+        self.postMessage({ type: "ready", payload: { device, modelId: currentModelId } });
+        return;
+      }
+      
+      // Clear previous model
+      model = null;
+      tokenizer = null;
+      
       // Only use webgpu if available
       let isWebGPUAvailable = false;
       if (navigator.gpu) {
@@ -103,15 +120,16 @@ self.onmessage = async (event) => {
         } catch {}
       }
       device = isWebGPUAvailable ? "webgpu" : "wasm";
-      tokenizer = await AutoTokenizer.from_pretrained(MODEL_ID);
-      model = await AutoModel.from_pretrained(MODEL_ID, {
+      
+      tokenizer = await AutoTokenizer.from_pretrained(modelId);
+      
+      // Special handling for EmbeddingGemma models
+      const modelOptions: any = {
         device,
-        dtype: "q4",
-        model_file_name: isWebGPUAvailable ? "model_no_gather" : "model",
-        progress_callback: (progress) => {
+        progress_callback: (progress: any) => {
           if (
             progress.status === "progress" &&
-            progress.file.endsWith(".onnx_data")
+            (progress.file.endsWith(".onnx_data") || progress.file.endsWith(".onnx"))
           ) {
             const percentage = Math.round(
               (progress.loaded / progress.total) * 100,
@@ -120,13 +138,22 @@ self.onmessage = async (event) => {
               type: "progress",
               payload: {
                 percentage,
-                status: `Loading model... ${percentage}%`,
+                status: `Loading ${modelId.split("/").pop()}... ${percentage}%`,
               },
             });
           }
         },
-      });
-      self.postMessage({ type: "ready", payload: { device } });
+      };
+      
+      if (isEmbeddingGemma(modelId)) {
+        modelOptions.dtype = "q4";
+        modelOptions.model_file_name = isWebGPUAvailable ? "model_no_gather" : "model";
+      }
+      
+      model = await AutoModel.from_pretrained(modelId, modelOptions);
+      currentModelId = modelId;
+      
+      self.postMessage({ type: "ready", payload: { device, modelId: currentModelId } });
     } catch (error) {
       self.postMessage({
         type: "error",
@@ -137,8 +164,39 @@ self.onmessage = async (event) => {
     try {
       const { sentences, options } = payload;
       const inputs = tokenizer(sentences, options);
-      const { sentence_embedding } = await model(inputs);
-      const embeddings = sentence_embedding.tolist();
+      const output = await model(inputs);
+      
+      // Handle different model output formats
+      let embeddings: number[][];
+      if (output.sentence_embedding) {
+        // EmbeddingGemma style output
+        embeddings = output.sentence_embedding.tolist();
+      } else if (output.last_hidden_state) {
+        // Standard transformer output - use mean pooling
+        const hiddenState = output.last_hidden_state;
+        const [batchSize, seqLen, hiddenSize] = hiddenState.dims;
+        embeddings = [];
+        
+        for (let b = 0; b < batchSize; b++) {
+          const embedding = new Array(hiddenSize).fill(0);
+          for (let s = 0; s < seqLen; s++) {
+            for (let h = 0; h < hiddenSize; h++) {
+              embedding[h] += hiddenState.data[b * seqLen * hiddenSize + s * hiddenSize + h];
+            }
+          }
+          // Mean pooling
+          for (let h = 0; h < hiddenSize; h++) {
+            embedding[h] /= seqLen;
+          }
+          embeddings.push(embedding);
+        }
+      } else if (output.pooler_output) {
+        // Some models have pooler output
+        embeddings = output.pooler_output.tolist();
+      } else {
+        throw new Error("Unknown model output format");
+      }
+      
       self.postMessage({ type: "embeddings", payload: { embeddings } });
     } catch (error) {
       self.postMessage({

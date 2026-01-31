@@ -6,11 +6,12 @@ import * as THREE from "three";
 import { cos_sim } from "@huggingface/transformers";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 
-import { DEFAULT_SENTENCES, GALAXY_RADIUS } from "./constants";
+import { DEFAULT_SENTENCES, GALAXY_RADIUS, DEFAULT_MODEL_ID } from "./constants";
 import Logo from "./components/Logo";
 import BackgroundMusic from "./components/BackgroundMusic";
 import HelpModal from "./components/HelpModal";
 import Tooltip from "./components/Tooltip";
+import ModelSelector from "./components/ModelSelector";
 import {
   useModel,
   DEFAULT_UMAP_CONFIG,
@@ -138,7 +139,11 @@ const MenuScene: FC = () => (
   </Canvas>
 );
 
-const MainMenuUI: FC<{ onLoadModel: () => void }> = ({ onLoadModel }) => (
+const MainMenuUI: FC<{ 
+  onLoadModel: () => void; 
+  selectedModelId: string;
+  onSelectModel: (modelId: string) => void;
+}> = ({ onLoadModel, selectedModelId, onSelectModel }) => (
   <div className="absolute top-0 left-0 w-full h-full flex flex-col items-center justify-center text-center p-4 z-10 pointer-events-none bg-black/20">
     <h1 className="text-shadow-lg text-4xl sm:text-5xl md:text-6xl lg:text-7xl font-bold text-white mb-2 animate-fade-in-down">
       The Semantic Galaxy
@@ -147,15 +152,23 @@ const MainMenuUI: FC<{ onLoadModel: () => void }> = ({ onLoadModel }) => (
       className="text-shadow-lg text-sm sm:text-md md:text-lg lg:text-xl text-gray-100 mb-6 animate-fade-in-down"
       style={{ animationDelay: "200ms" }}
     >
-      Visualize embeddings in 3D space, powered by EmbeddingGemma and
-      Transformers.js
+      Visualize embeddings in 3D space, powered by Transformers.js
     </p>
+    <div
+      className="w-full max-w-md pointer-events-auto animate-fade-in-up mb-4"
+      style={{ animationDelay: "400ms" }}
+    >
+      <ModelSelector
+        selectedModelId={selectedModelId}
+        onSelectModel={onSelectModel}
+      />
+    </div>
     <button
       onClick={onLoadModel}
       className="bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 px-8 rounded-lg text-xl transition-all duration-300 transform hover:scale-105 pointer-events-auto animate-fade-in-up"
       style={{ animationDelay: "600ms" }}
     >
-      Load Demo
+      Load Model
     </button>
   </div>
 );
@@ -470,6 +483,7 @@ export default function App() {
     error,
     embed,
     runUMAP,
+    modelId: loadedModelId,
   } = useModel();
 
   const [textInput, setTextInput] = useState<string>("");
@@ -481,6 +495,9 @@ export default function App() {
   const [isTextareaExpanded, setIsTextareaExpanded] = useState<boolean>(false);
   const lastQueryEmbedding = useRef<number[] | null>(null);
   const [generationStatus, setGenerationStatus] = useState("");
+  
+  // Model selection state
+  const [selectedModelId, setSelectedModelId] = useState<string>(DEFAULT_MODEL_ID);
   
   // UMAP configuration state
   const [umapConfig, setUmapConfig] = useState<UMAPConfig>(DEFAULT_UMAP_CONFIG);
@@ -505,6 +522,18 @@ export default function App() {
 
   const isSearching = useRef(false);
   const pendingQuery = useRef<string | null>(null);
+  
+  // Handle model change (reload if different model selected)
+  const handleModelChange = async (newModelId: string) => {
+    setSelectedModelId(newModelId);
+    if (isReady && newModelId !== loadedModelId) {
+      // Clear existing galaxy when changing models
+      setGalaxyPoints([]);
+      setSearchResults([]);
+      setClusterAssignments(null);
+      await loadModel(newModelId);
+    }
+  };
 
   const setDefaultSentences = () => {
     let sentences = DEFAULT_SENTENCES;
@@ -679,7 +708,13 @@ export default function App() {
       <div className="h-screen w-screen bg-[#08080b] text-white relative">
         <BackgroundMusic enabled={musicEnabled} />
         <MenuScene />
-        {!isLoading && <MainMenuUI onLoadModel={loadModel} />}
+        {!isLoading && (
+          <MainMenuUI 
+            onLoadModel={() => loadModel(selectedModelId)} 
+            selectedModelId={selectedModelId}
+            onSelectModel={setSelectedModelId}
+          />
+        )}
         {isLoading && <LoadingUI status={status} progress={progress} />}
         {error && (
           <div className="absolute bottom-4 left-4 bg-red-500/50 text-white p-4 rounded-lg">
@@ -766,6 +801,22 @@ export default function App() {
                   The Semantic Galaxy
                 </h1>
               </div>
+              
+              {/* Model selector in header */}
+              <div className="flex items-center justify-between mb-3">
+                <ModelSelector
+                  selectedModelId={selectedModelId}
+                  onSelectModel={handleModelChange}
+                  disabled={isGenerating}
+                  compact
+                />
+                {loadedModelId && (
+                  <span className="text-xs text-gray-500">
+                    {device === "webgpu" ? "🚀 WebGPU" : "⚙️ WASM"}
+                  </span>
+                )}
+              </div>
+              
               <div className="flex justify-between items-center mb-1">
                 <label
                   htmlFor="text-input"

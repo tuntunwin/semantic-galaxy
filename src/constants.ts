@@ -1,5 +1,78 @@
 export const GALAXY_RADIUS = 70;
 
+// Compatible embedding models from Hugging Face
+// These models are ONNX-optimized and work with Transformers.js
+export interface EmbeddingModel {
+  id: string;
+  name: string;
+  description: string;
+  dimensions: number;
+  size: string;
+  recommended?: boolean;
+}
+
+export const EMBEDDING_MODELS: EmbeddingModel[] = [
+  {
+    id: "onnx-community/embeddinggemma-300m-ONNX",
+    name: "EmbeddingGemma 300M",
+    description: "Google's embedding model optimized for semantic similarity",
+    dimensions: 768,
+    size: "~300MB",
+    recommended: true,
+  },
+  {
+    id: "Xenova/all-MiniLM-L6-v2",
+    name: "MiniLM-L6-v2",
+    description: "Fast & lightweight, great for general use",
+    dimensions: 384,
+    size: "~23MB",
+  },
+  {
+    id: "Xenova/all-mpnet-base-v2",
+    name: "MPNet Base v2",
+    description: "High quality embeddings, good balance of speed & accuracy",
+    dimensions: 768,
+    size: "~110MB",
+  },
+  {
+    id: "Xenova/bge-small-en-v1.5",
+    name: "BGE Small EN",
+    description: "BAAI's compact model, excellent for English text",
+    dimensions: 384,
+    size: "~33MB",
+  },
+  {
+    id: "Xenova/bge-base-en-v1.5",
+    name: "BGE Base EN",
+    description: "BAAI's base model, higher accuracy than small",
+    dimensions: 768,
+    size: "~110MB",
+  },
+  {
+    id: "Xenova/gte-small",
+    name: "GTE Small",
+    description: "Alibaba's general text embeddings, compact version",
+    dimensions: 384,
+    size: "~33MB",
+  },
+  {
+    id: "Xenova/e5-small-v2",
+    name: "E5 Small v2",
+    description: "Microsoft's embedding model, good for retrieval",
+    dimensions: 384,
+    size: "~33MB",
+  },
+  {
+    id: "Xenova/multilingual-e5-small",
+    name: "E5 Multilingual Small",
+    description: "Supports 100+ languages",
+    dimensions: 384,
+    size: "~118MB",
+  },
+];
+
+export const DEFAULT_MODEL_ID = "onnx-community/embeddinggemma-300m-ONNX";
+
 export const DEFAULT_SENTENCES = [
   // Weather
   "The sun peeked through the clouds after a drizzly morning.",

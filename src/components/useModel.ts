@@ -7,6 +7,7 @@ interface ModelLoaderState {
   progress: number;
   status: string;
   device: "webgpu" | "wasm" | null;
+  modelId: string | null;
 }
 
 export type DistanceMetric = "euclidean" | "cosine";
@@ -38,6 +39,7 @@ export const DEFAULT_CLUSTERING_CONFIG: ClusteringConfig = {
 
 let worker: Worker | null = null;
 let workerReady = false;
+let currentLoadedModelId: string | null = null;
 let pendingEmbeddings: ((embeddings: number[][]) => void)[] = [];
 let pendingUMAP: ((result: { coords3D: number[][]; clusterAssignments: number[] | null }) => void)[] = [];
 
@@ -49,6 +51,7 @@ export const useModel = () => {
     progress: 0,
     status: "Waiting to start...",
     device: null,
+    modelId: null,
   });
 
   useEffect(() => {
@@ -66,6 +69,7 @@ export const useModel = () => {
           }));
         } else if (type === "ready") {
           workerReady = true;
+          currentLoadedModelId = payload.modelId;
           setState((prev) => ({
             ...prev,
             isLoading: false,
@@ -73,6 +77,7 @@ export const useModel = () => {
             progress: 100,
             status: "Ready. Enter sentences and generate the galaxy!",
             device: payload.device,
+            modelId: payload.modelId,
           }));
         } else if (type === "error") {
           setState((prev) => ({
@@ -94,22 +99,31 @@ export const useModel = () => {
     }
   }, []);
 
-  const loadModel = useCallback(async () => {
-    if (workerReady && state.device) {
-      return { device: state.device };
+  const loadModel = useCallback(async (modelId?: string) => {
+    const targetModelId = modelId || "onnx-community/embeddinggemma-300m-ONNX";
+    
+    // If same model is already loaded, just return
+    if (workerReady && currentLoadedModelId === targetModelId && state.device) {
+      return { device: state.device, modelId: currentLoadedModelId };
     }
+    
+    // Reset state for new model
+    workerReady = false;
     setState((prev) => ({
       ...prev,
       isLoading: true,
+      isReady: false,
       error: null,
       progress: 0,
-      status: "Initializing...",
+      status: `Initializing ${targetModelId.split("/").pop()}...`,
     }));
-    worker?.postMessage({ type: "load-model" });
-    return new Promise<{ device: "webgpu" | "wasm" }>((resolve, reject) => {
+    
+    worker?.postMessage({ type: "load-model", payload: { modelId: targetModelId } });
+    
+    return new Promise<{ device: "webgpu" | "wasm"; modelId: string }>((resolve, reject) => {
       const checkReady = () => {
-        if (workerReady && state.device) {
-          resolve({ device: state.device });
+        if (workerReady && currentLoadedModelId === targetModelId && state.device) {
+          resolve({ device: state.device, modelId: currentLoadedModelId! });
         } else if (state.error) {
           reject(state.error);
         } else {
