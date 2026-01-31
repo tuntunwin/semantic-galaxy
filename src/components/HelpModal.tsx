@@ -1,5 +1,6 @@
 import { useState, useEffect, type FC } from "react";
 import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 interface HelpModalProps {
   isOpen: boolean;
@@ -101,6 +102,7 @@ const HelpModal: FC<HelpModalProps> = ({ isOpen, onClose, scrollToSection }) => 
           ) : (
             <div className="help-content">
               <Markdown
+                remarkPlugins={[remarkGfm]}
                 components={{
                   h1: ({ children }) => (
                     <h1 className="text-2xl font-bold text-white border-b border-white/10 pb-2 mb-4">{children}</h1>
