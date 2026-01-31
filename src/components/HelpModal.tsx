@@ -15,7 +15,7 @@ const HelpModal: FC<HelpModalProps> = ({ isOpen, onClose, scrollToSection }) => 
   useEffect(() => {
     if (isOpen) {
       setIsLoading(true);
-      fetch("/help/umap-settings.md")
+      fetch(`${import.meta.env.BASE_URL}help/umap-settings.md`)
         .then((res) => res.text())
         .then((text) => {
           setContent(text);
