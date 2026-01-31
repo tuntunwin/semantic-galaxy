@@ -14,7 +14,8 @@ const BackgroundMusic = ({ enabled }: BackgroundMusicProps) => {
 
     if (enabled) {
       const playAudio = () => {
-        audio.play().catch((e) => console.error("Could not play audio.", e));
+        audio.volume = 0.5; // Set reasonable volume
+        audio.play().catch((e) => console.error("Could not play audio:", e));
       };
 
       if (hasInteracted.current) {
@@ -36,7 +37,10 @@ const BackgroundMusic = ({ enabled }: BackgroundMusicProps) => {
     }
   }, [enabled]);
 
-  return <audio ref={audioRef} src="/music.mp3" loop />;
+  // Use BASE_URL for proper path resolution on GitHub Pages
+  const musicSrc = `${import.meta.env.BASE_URL}music.mp3`;
+
+  return <audio ref={audioRef} src={musicSrc} loop preload="auto" />;
 };
 
 export default BackgroundMusic;
