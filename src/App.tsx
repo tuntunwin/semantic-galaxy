@@ -539,6 +539,7 @@ export default function App() {
       }
 
       try {
+        console.log(`Searching for: ${queryToRun}`);
         const [queryEmbedding] = await embed([queryToRun], {
           padding: true,
           truncation: true,
@@ -585,7 +586,7 @@ export default function App() {
   if (!isReady) {
     return (
       <div className="h-screen w-screen bg-[#08080b] text-white relative">
-        <BackgroundMusic />
+        {/* <BackgroundMusic /> */}
         <MenuScene />
         {!isLoading && <MainMenuUI onLoadModel={loadModel} />}
         {isLoading && <LoadingUI status={status} progress={progress} />}
@@ -600,7 +601,7 @@ export default function App() {
 
   return (
     <div className="h-screen w-screen bg-[#08080b] text-white relative">
-      <BackgroundMusic />
+      {/* <BackgroundMusic /> */}
       <div className="absolute top-0 left-0 w-full h-full z-0">
         {galaxyPoints.length > 0 ? (
           <Canvas frameloop="demand" camera={{ position: [0, 0, 25], fov: 45 }}>
